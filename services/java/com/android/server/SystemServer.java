@@ -190,6 +190,7 @@ import com.android.server.input.InputManagerService;
 import com.android.server.inputmethod.InputMethodManagerService;
 import com.android.server.integrity.AppIntegrityManagerService;
 import com.android.server.job.JobSchedulerService;
+import com.android.server.libremobileos.FaceUnlockService;
 import com.android.server.lights.LightsService;
 import com.android.server.locales.LocaleManagerService;
 import com.android.server.location.LocationManagerService;
@@ -2791,6 +2792,14 @@ public final class SystemServer implements Dumpable {
                     = mPackageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT);
 
             if (hasFeatureFace) {
+                t.traceBegin("StartFaceUnlockService");
+                try {
+                    mSystemServiceManager.startService(FaceUnlockService.class);
+                } catch (Throwable e) {
+                    reportWtf("starting FaceUnlockService", e);
+                }
+                t.traceEnd();
+
                 t.traceBegin("StartFaceSensor");
                 final FaceService faceService =
                         mSystemServiceManager.startService(FaceService.class);
