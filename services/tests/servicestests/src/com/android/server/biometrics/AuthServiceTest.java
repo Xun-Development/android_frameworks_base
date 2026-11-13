@@ -27,12 +27,16 @@ import static android.hardware.biometrics.BiometricAuthenticator.TYPE_NONE;
 import static android.hardware.biometrics.BiometricConstants.BIOMETRIC_ERROR_CANCELED;
 import static android.hardware.biometrics.BiometricConstants.BIOMETRIC_SUCCESS;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -46,6 +50,7 @@ import android.app.AppOpsManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
+import android.content.res.TypedArray;
 import android.hardware.biometrics.AuthenticationStateListener;
 import android.hardware.biometrics.BiometricEnrollmentStatusInternal;
 import android.hardware.biometrics.BiometricManager;
@@ -122,6 +127,8 @@ public class AuthServiceTest {
     @Mock
     private Resources mResources;
     @Mock
+    private TypedArray mSfpsSensorProps;
+    @Mock
     private PackageManager mPackageManager;
     @Mock
     IBiometricServiceReceiver mReceiver;
@@ -165,6 +172,9 @@ public class AuthServiceTest {
         LocalServices.removeServiceForTest(VirtualDeviceManagerInternal.class);
         LocalServices.addService(VirtualDeviceManagerInternal.class, mVdmInternal);
 
+        when(mResources.obtainTypedArray(eq(R.array.config_sfps_sensor_props)))
+                .thenReturn(mSfpsSensorProps);
+        when(mSfpsSensorProps.length()).thenReturn(0);
         when(mResources.getIntArray(eq(R.array.config_udfps_sensor_props))).thenReturn(new int[0]);
         when(mResources.getBoolean(eq(R.bool.config_is_powerbutton_fps))).thenReturn(false);
         when(mResources.getInteger(eq(R.integer.config_fingerprintMaxTemplatesPerUser))).thenReturn(
@@ -269,6 +279,98 @@ public class AuthServiceTest {
         assertEquals(faceProp[0].commonProps.sensorId, faceId);
         assertEquals(faceProp[0].commonProps.sensorStrength,
                 Utils.authenticatorStrengthToPropertyStrength(faceStrength));
+    }
+
+    @Test
+    public void testInjectorConfigurations_separateModalitiesAndPreserveOrder() {
+        when(mResources.getStringArray(R.array.config_biometric_sensors)).thenReturn(new String[]{
+                "2:8:255", "0:2:15", "3:8:4095", "1:4:15"
+        });
+        final AuthService.Injector injector = new AuthService.Injector();
+
+        assertArrayEquals(new String[]{"0:2:15"},
+                injector.getFingerprintConfiguration(mContext));
+        assertArrayEquals(new String[]{"2:8:255", "3:8:4095"},
+                injector.getFaceConfiguration(mContext));
+        assertArrayEquals(new String[]{"1:4:15"}, injector.getIrisConfiguration(mContext));
+    }
+
+    @Test
+    public void testRegisterFingerprintAidl_faceOnlyHidlConfig_keepsAidlMode()
+            throws RemoteException {
+        when(mInjector.getConfiguration(any())).thenReturn(new String[]{"1:8:255"});
+        useRealModalityConfigurations();
+        when(mInjector.getFingerprintAidlInstances()).thenReturn(new String[]{"default"});
+        when(mInjector.getFaceAidlInstances()).thenReturn(new String[0]);
+
+        mAuthService = new AuthService(mContext, mInjector);
+        mAuthService.onStart();
+        mFingerprintLooper.dispatchAll();
+        mFaceLooper.dispatchAll();
+
+        verify(mFingerprintService).registerAuthenticators(
+                mFingerprintSensorConfigurationsCaptor.capture());
+        final FingerprintSensorConfigurations configuration =
+                mFingerprintSensorConfigurationsCaptor.getValue();
+        assertTrue(configuration.getResetLockoutRequiresHardwareAuthToken());
+        assertTrue(configuration.isSingleSensorConfigurationPresent());
+        assertEquals("default", configuration.getSensorInstance());
+        assertFalse(configuration.doesInstanceExist("defaultHIDL"));
+    }
+
+    @Test
+    public void testRegisterFingerprintAidl_malformedHidlConfigs_keepsAidlMode()
+            throws RemoteException {
+        when(mInjector.getConfiguration(any())).thenReturn(new String[]{
+                null, "", "0:2", "invalid:2:15", "0:fingerprint:15", "0:2:15:extra", "1:8:255"
+        });
+        useRealModalityConfigurations();
+        when(mInjector.getFingerprintAidlInstances()).thenReturn(new String[]{"default"});
+        when(mInjector.getFaceAidlInstances()).thenReturn(new String[0]);
+
+        mAuthService = new AuthService(mContext, mInjector);
+        mAuthService.onStart();
+        mFingerprintLooper.dispatchAll();
+        mFaceLooper.dispatchAll();
+
+        verify(mFingerprintService).registerAuthenticators(
+                mFingerprintSensorConfigurationsCaptor.capture());
+        final FingerprintSensorConfigurations configuration =
+                mFingerprintSensorConfigurationsCaptor.getValue();
+        assertTrue(configuration.getResetLockoutRequiresHardwareAuthToken());
+        assertTrue(configuration.isSingleSensorConfigurationPresent());
+        assertEquals("default", configuration.getSensorInstance());
+        assertFalse(configuration.doesInstanceExist("defaultHIDL"));
+    }
+
+    @Test
+    public void testRegisterFingerprintHidl_legacyConfig_keepsHidlMode() throws RemoteException {
+        when(mInjector.getConfiguration(any())).thenReturn(new String[]{"0:2:15"});
+        useRealModalityConfigurations();
+        when(mInjector.getFingerprintAidlInstances()).thenReturn(new String[0]);
+        when(mInjector.getFaceAidlInstances()).thenReturn(new String[0]);
+
+        mAuthService = new AuthService(mContext, mInjector);
+        mAuthService.onStart();
+        mFingerprintLooper.dispatchAll();
+        mFaceLooper.dispatchAll();
+
+        verify(mFingerprintService).registerAuthenticators(
+                mFingerprintSensorConfigurationsCaptor.capture());
+        final FingerprintSensorConfigurations configuration =
+                mFingerprintSensorConfigurationsCaptor.getValue();
+        assertFalse(configuration.getResetLockoutRequiresHardwareAuthToken());
+        assertTrue(configuration.isSingleSensorConfigurationPresent());
+        assertEquals("defaultHIDL", configuration.getSensorInstance());
+        final SensorProps[] properties = configuration.getSensorPropForInstance("defaultHIDL");
+        assertEquals(1, properties.length);
+        assertEquals(0, properties[0].commonProps.sensorId);
+    }
+
+    private void useRealModalityConfigurations() {
+        doCallRealMethod().when(mInjector).getFingerprintConfiguration(any());
+        doCallRealMethod().when(mInjector).getFaceConfiguration(any());
+        doCallRealMethod().when(mInjector).getIrisConfiguration(any());
     }
 
     // TODO(b/141025588): Check that an exception is thrown when the userId != callingUserId

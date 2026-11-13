@@ -32,6 +32,7 @@ import static android.hardware.biometrics.BiometricConstants.BIOMETRIC_ERROR_CAN
 import static android.hardware.biometrics.BiometricManager.Authenticators;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.AppOpsManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -141,7 +142,7 @@ public class AuthService extends SystemService {
          */
         @VisibleForTesting
         public String[] getFingerprintConfiguration(Context context) {
-            return getConfiguration(context);
+            return getConfigurationForModality(context, BiometricAuthenticator.TYPE_FINGERPRINT);
         }
 
         /**
@@ -149,7 +150,7 @@ public class AuthService extends SystemService {
          */
         @VisibleForTesting
         public String[] getFaceConfiguration(Context context) {
-            return getConfiguration(context);
+            return getConfigurationForModality(context, BiometricAuthenticator.TYPE_FACE);
         }
 
         /**
@@ -157,7 +158,37 @@ public class AuthService extends SystemService {
          */
         @VisibleForTesting
         public String[] getIrisConfiguration(Context context) {
-            return getConfiguration(context);
+            return getConfigurationForModality(context, BiometricAuthenticator.TYPE_IRIS);
+        }
+
+        // The overlay is shared by all modalities. Only matching HIDL sensors may
+        // influence registration and transport selection for a particular modality.
+        private String[] getConfigurationForModality(Context context, int modality) {
+            final ArrayList<String> configurations = new ArrayList<>();
+            final String[] allConfigurations = getConfiguration(context);
+            if (allConfigurations == null) {
+                return new String[0];
+            }
+            for (String configuration : allConfigurations) {
+                final SensorConfig sensor = parseSensorConfig(configuration);
+                if (sensor != null && sensor.modality == modality) {
+                    configurations.add(configuration);
+                }
+            }
+            return configurations.toArray(new String[0]);
+        }
+
+        @Nullable
+        private static SensorConfig parseSensorConfig(String configuration) {
+            try {
+                if (configuration == null || configuration.split(":", -1).length != 3) {
+                    throw new IllegalArgumentException("Expected id:modality:strength");
+                }
+                return new SensorConfig(configuration);
+            } catch (RuntimeException e) {
+                Slog.w(TAG, "Ignoring malformed biometric sensor configuration: " + configuration, e);
+                return null;
+            }
         }
 
         /**
@@ -932,26 +963,6 @@ public class AuthService extends SystemService {
     @Override
     public void onStart() {
         mBiometricService = mInjector.getBiometricService();
-
-        final SensorConfig[] hidlConfigs;
-        if (!mInjector.isHidlDisabled(getContext())) {
-            final int firstApiLevel = SystemProperties.getInt(SYSPROP_FIRST_API_LEVEL, 0);
-            final int apiLevel = SystemProperties.getInt(SYSPROP_API_LEVEL, firstApiLevel);
-            String[] configStrings = mInjector.getConfiguration(getContext());
-            if (configStrings.length == 0 && apiLevel == Build.VERSION_CODES.R) {
-                // For backwards compatibility with R where biometrics could work without being
-                // configured in config_biometric_sensors. In the absence of a vendor provided
-                // configuration, we assume the weakest biometric strength (i.e. convenience).
-                Slog.w(TAG, "Found R vendor partition without config_biometric_sensors");
-                configStrings = generateRSdkCompatibleConfiguration();
-            }
-            hidlConfigs = new SensorConfig[configStrings.length];
-            for (int i = 0; i < configStrings.length; ++i) {
-                hidlConfigs[i] = new SensorConfig(configStrings[i]);
-            }
-        } else {
-            hidlConfigs = null;
-        }
 
         registerAuthenticators();
         mInjector.publishBinderService(this, mImpl);

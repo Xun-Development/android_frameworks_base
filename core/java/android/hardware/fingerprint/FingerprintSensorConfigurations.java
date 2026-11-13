@@ -96,6 +96,9 @@ public class FingerprintSensorConfigurations implements Parcelable {
                 hidlFingerprintSensorConfigs.add(hidlFingerprintSensorConfig);
             }
         }
+        if (hidlFingerprintSensorConfigs.isEmpty()) {
+            return;
+        }
         final String hidlHalInstanceName = "defaultHIDL";
         mSensorPropsMap.put(hidlHalInstanceName,
                 hidlFingerprintSensorConfigs.toArray(
